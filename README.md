@@ -20,13 +20,13 @@ Compile and install the extension (supports Postgres 12+)
 
 ```sh
 cd /tmp
-git clone --branch v0.6.0 https://github.com/pgvector/pgvector.git
+git clone --branch v0.6.2 https://github.com/pgvector/pgvector.git
 cd pgvector
 make
 make install # may need sudo
 ```
 
-See the [installation notes](#installation-notes) if you run into issues
+See the [installation notes](#installation-notes---linux-and-mac) if you run into issues
 
 You can also install it with [Docker](#docker), [Homebrew](#homebrew), [PGXN](#pgxn), [APT](#apt), [Yum](#yum), [pkg](#pkg), or [conda-forge](#conda-forge), and it comes preinstalled with [Postgres.app](#postgresapp) and many [hosted providers](#hosted-postgres). There are also instructions for [GitHub Actions](https://github.com/pgvector/setup-pgvector).
 
@@ -44,11 +44,14 @@ Then use `nmake` to build:
 
 ```cmd
 set "PGROOT=C:\Program Files\PostgreSQL\16"
-git clone --branch v0.6.0 https://github.com/pgvector/pgvector.git
+cd %TEMP%
+git clone --branch v0.6.2 https://github.com/pgvector/pgvector.git
 cd pgvector
 nmake /F Makefile.win
 nmake /F Makefile.win install
 ```
+
+See the [installation notes](#installation-notes---windows) if you run into issues
 
 You can also install it with [Docker](#docker) or [conda-forge](#conda-forge).
 
@@ -102,6 +105,12 @@ Insert vectors
 INSERT INTO items (embedding) VALUES ('[1,2,3]'), ('[4,5,6]');
 ```
 
+Or load vectors in bulk using `COPY` ([example](https://github.com/pgvector/pgvector-python/blob/master/examples/bulk_loading.py))
+
+```sql
+COPY items (embedding) FROM STDIN WITH (FORMAT BINARY);
+```
+
 Upsert vectors
 
 ```sql
@@ -128,6 +137,12 @@ Get the nearest neighbors to a vector
 ```sql
 SELECT * FROM items ORDER BY embedding <-> '[3,1,2]' LIMIT 5;
 ```
+
+Supported distance functions are:
+
+- `<->` - L2 distance
+- `<#>` - (negative) inner product
+- `<=>` - cosine distance
 
 Get the nearest neighbors to a row
 
@@ -212,7 +227,24 @@ Cosine distance
 CREATE INDEX ON items USING hnsw (embedding vector_cosine_ops);
 ```
 
-Vectors with up to 2,000 dimensions can be indexed.
+Hamming distance - unreleased
+
+```sql
+CREATE INDEX ON items USING hnsw (embedding bit_hamming_ops);
+```
+
+Jaccard distance - unreleased
+
+```sql
+CREATE INDEX ON items USING hnsw (embedding bit_jaccard_ops);
+```
+
+Supported types are:
+
+- `vector` - up to 2,000 dimensions
+- `halfvec` - up to 4,000 dimensions (unreleased)
+- `bit` - up to 64,000 dimensions (unreleased)
+- `sparsevec` - up to 1,000 non-zero elements (unreleased)
 
 ### Index Options
 
@@ -263,6 +295,8 @@ HINT:  Increase maintenance_work_mem to speed up builds.
 ```
 
 Note: Do not set `maintenance_work_mem` so high that it exhausts the memory on the server
+
+Like other index types, it’s faster to create an index after loading your initial data
 
 Starting with 0.6.0, you can also speed up index creation by increasing the number of parallel workers (2 by default)
 
@@ -315,7 +349,11 @@ Cosine distance
 CREATE INDEX ON items USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 ```
 
-Vectors with up to 2,000 dimensions can be indexed.
+Supported types are:
+
+- `vector` - up to 2,000 dimensions
+- `halfvec` - up to 4,000 dimensions (unreleased)
+- `bit` - up to 64,000 dimensions (unreleased)
 
 ### Query Options
 
@@ -389,6 +427,103 @@ Use [partitioning](https://www.postgresql.org/docs/current/ddl-partitioning.html
 CREATE TABLE items (embedding vector(3), category_id int) PARTITION BY LIST(category_id);
 ```
 
+## Half Vectors
+
+*Unreleased*
+
+Use the `halfvec` type to store half-precision vectors
+
+```sql
+CREATE TABLE items (id bigserial PRIMARY KEY, embedding halfvec(3));
+```
+
+## Half Indexing
+
+*Unreleased*
+
+Index vectors at half precision for smaller indexes and faster build times
+
+```sql
+CREATE INDEX ON items USING hnsw ((embedding::halfvec(3)) halfvec_l2_ops);
+```
+
+Get the nearest neighbors
+
+```sql
+SELECT * FROM items ORDER BY embedding::halfvec(3) <-> '[1,2,3]' LIMIT 5;
+```
+
+## Binary Vectors
+
+Use the `bit` type to store binary vectors ([example](https://github.com/pgvector/pgvector-python/blob/master/examples/hash_image_search.py))
+
+```sql
+CREATE TABLE items (id bigserial PRIMARY KEY, embedding bit(3));
+INSERT INTO items (embedding) VALUES ('000'), ('111');
+```
+
+Get the nearest neighbors by Hamming distance
+
+```sql
+SELECT * FROM items ORDER BY bit_count(embedding # '101') LIMIT 5;
+```
+
+Or (unreleased)
+
+```sql
+SELECT * FROM items ORDER BY embedding <~> '101' LIMIT 5;
+```
+
+Also supports Jaccard distance (`<%>`)
+
+## Binary Quantization
+
+*Unreleased*
+
+Use expression indexing for binary quantization
+
+```sql
+CREATE INDEX ON items USING hnsw ((binary_quantize(embedding)::bit(3)) bit_hamming_ops);
+```
+
+Get the nearest neighbors by Hamming distance
+
+```sql
+SELECT * FROM items ORDER BY binary_quantize(embedding)::bit(3) <~> binary_quantize('[1,-2,3]') LIMIT 5;
+```
+
+Re-rank by the original vectors for better recall
+
+```sql
+SELECT * FROM (
+    SELECT * FROM items ORDER BY binary_quantize(embedding)::bit(3) <~> binary_quantize('[1,-2,3]') LIMIT 20
+) ORDER BY embedding <=> '[1,-2,3]' LIMIT 5;
+```
+
+## Sparse Vectors
+
+*Unreleased*
+
+Use the `sparsevec` type to store sparse vectors
+
+```sql
+CREATE TABLE items (id bigserial PRIMARY KEY, embedding sparsevec(5));
+```
+
+Insert vectors
+
+```sql
+INSERT INTO items (embedding) VALUES ('{1:1,3:2,5:3}/5'), ('{1:4,3:5,5:6}/5');
+```
+
+The format is `{index1:value1,index2:value2}/dimensions` and indices start at 1 like SQL arrays
+
+Get the nearest neighbors by L2 distance
+
+```sql
+SELECT * FROM items ORDER BY embedding <-> '{1:3,3:1,5:2}/5' LIMIT 5;
+```
+
 ## Hybrid Search
 
 Use together with Postgres [full-text search](https://www.postgresql.org/docs/current/textsearch-intro.html) for hybrid search.
@@ -400,7 +535,69 @@ SELECT id, content FROM items, plainto_tsquery('hello search') query
 
 You can use [Reciprocal Rank Fusion](https://github.com/pgvector/pgvector-python/blob/master/examples/hybrid_search_rrf.py) or a [cross-encoder](https://github.com/pgvector/pgvector-python/blob/master/examples/hybrid_search.py) to combine results.
 
+## Subvector Indexing
+
+*Unreleased*
+
+Use expression indexing to index subvectors
+
+```sql
+CREATE INDEX ON items USING hnsw ((subvector(embedding, 1, 3)::vector(3)) vector_cosine_ops);
+```
+
+Get the nearest neighbors by cosine distance
+
+```sql
+SELECT * FROM items ORDER BY subvector(embedding, 1, 3)::vector(3) <=> subvector('[1,2,3,4,5]'::vector, 1, 3) LIMIT 5;
+```
+
+Re-rank by the full vectors for better recall
+
+```sql
+SELECT * FROM (
+    SELECT * FROM items ORDER BY subvector(embedding, 1, 3)::vector(3) <=> subvector('[1,2,3,4,5]'::vector, 1, 3) LIMIT 20
+) ORDER BY embedding <=> '[1,2,3,4,5]' LIMIT 5;
+```
+
 ## Performance
+
+### Tuning
+
+Use a tool like [PgTune](https://pgtune.leopard.in.ua/) to set initial values for Postgres server parameters. For instance, `shared_buffers` should typically be 25% of the server’s memory. You can find the config file with:
+
+```sql
+SHOW config_file;
+```
+
+And check individual settings with:
+
+```sql
+SHOW shared_buffers;
+```
+
+Be sure to restart Postgres for changes to take effect.
+
+### Loading
+
+Use `COPY` for bulk loading data ([example](https://github.com/pgvector/pgvector-python/blob/master/examples/bulk_loading.py)).
+
+```sql
+COPY items (embedding) FROM STDIN WITH (FORMAT BINARY);
+```
+
+Add any indexes *after* loading the initial data for best performance.
+
+### Indexing
+
+See index build time for [HNSW](#index-build-time) and [IVFFlat](#index-build-time-1).
+
+In production environments, create indexes concurrently to avoid blocking writes.
+
+```sql
+CREATE INDEX CONCURRENTLY ...
+```
+
+### Querying
 
 Use `EXPLAIN ANALYZE` to debug performance.
 
@@ -408,7 +605,7 @@ Use `EXPLAIN ANALYZE` to debug performance.
 EXPLAIN ANALYZE SELECT * FROM items ORDER BY embedding <-> '[3,1,2]' LIMIT 5;
 ```
 
-### Exact Search
+#### Exact Search
 
 To speed up queries without an index, increase `max_parallel_workers_per_gather`.
 
@@ -422,7 +619,7 @@ If vectors are normalized to length 1 (like [OpenAI embeddings](https://platform
 SELECT * FROM items ORDER BY embedding <#> '[3,1,2]' LIMIT 5;
 ```
 
-### Approximate Search
+#### Approximate Search
 
 To speed up queries with an IVFFlat index, increase the number of inverted lists (at the expense of recall).
 
@@ -430,7 +627,7 @@ To speed up queries with an IVFFlat index, increase the number of inverted lists
 CREATE INDEX ON items USING ivfflat (embedding vector_l2_ops) WITH (lists = 1000);
 ```
 
-## Vacuuming
+### Vacuuming
 
 Vacuuming can take a while for HNSW indexes. Speed it up by reindexing first.
 
@@ -438,6 +635,41 @@ Vacuuming can take a while for HNSW indexes. Speed it up by reindexing first.
 REINDEX INDEX CONCURRENTLY index_name;
 VACUUM table_name;
 ```
+
+## Monitoring
+
+Monitor performance with [pg_stat_statements](https://www.postgresql.org/docs/current/pgstatstatements.html) (be sure to add it to `shared_preload_libraries`).
+
+```sql
+CREATE EXTENSION pg_stat_statements;
+```
+
+Get the most time-consuming queries with:
+
+```sql
+SELECT query, calls, ROUND((total_plan_time + total_exec_time) / calls) AS avg_time_ms,
+    ROUND((total_plan_time + total_exec_time) / 60000) AS total_time_min
+    FROM pg_stat_statements ORDER BY total_plan_time + total_exec_time DESC LIMIT 20;
+```
+
+Note: Replace `total_plan_time + total_exec_time` with `total_time` for Postgres < 13
+
+Monitor recall by comparing results from approximate search with exact search.
+
+```sql
+BEGIN;
+SET LOCAL enable_indexscan = off; -- use exact search
+SELECT ...
+COMMIT;
+```
+
+## Scaling
+
+Scale pgvector the same way you scale Postgres.
+
+Scale vertically by increasing memory, CPU, and storage on a single instance. Use existing tools to [tune parameters](#tuning) and [monitor performance](#monitoring).
+
+Scale horizontally with [replicas](https://www.postgresql.org/docs/current/hot-standby.html), or use [Citus](https://github.com/citusdata/citus) or another approach for sharding ([example](https://github.com/pgvector/pgvector-python/blob/master/examples/citus.py)).
 
 ## Languages
 
@@ -544,7 +776,17 @@ SELECT pg_size_pretty(pg_relation_size('index_name'));
 
 #### Why isn’t a query using an index?
 
-The cost estimation in pgvector < 0.4.3 does not always work well with the planner. You can encourage the planner to use an index for a query with:
+The query needs to have an `ORDER BY` and `LIMIT`, and the `ORDER BY` must be the result of a distance operator, not an expression.
+
+```sql
+-- index
+ORDER BY embedding <=> '[3,1,2]' LIMIT 5;
+
+-- no index
+ORDER BY 1 - (embedding <=> '[3,1,2]') DESC LIMIT 5;
+```
+
+You can encourage the planner to use an index for a query with:
 
 ```sql
 BEGIN;
@@ -573,6 +815,12 @@ or choose to store vectors inline:
 ALTER TABLE items ALTER COLUMN embedding SET STORAGE PLAIN;
 ```
 
+#### Why are there less results for a query after adding an HNSW index?
+
+Results are limited by the size of the dynamic candidate list (`hnsw.ef_search`). There may be even less results due to dead tuples or filtering conditions in the query. We recommend setting `hnsw.ef_search` to at least twice the `LIMIT` of the query. If you need more than 500 results, use an IVFFlat index instead.
+
+Also, note that `NULL` vectors are not indexed (as well as zero vectors for cosine distance).
+
 #### Why are there less results for a query after adding an IVFFlat index?
 
 The index was likely created with too little data for the number of lists. Drop the index until the table has more data.
@@ -581,11 +829,20 @@ The index was likely created with too little data for the number of lists. Drop 
 DROP INDEX index_name;
 ```
 
+Results can also be limited by the number of probes (`ivfflat.probes`).
+
+Also, note that `NULL` vectors are not indexed (as well as zero vectors for cosine distance).
+
 ## Reference
+
+- [Vector](#vector-type)
+- [Halfvec](#halfvec-type)
+- [Bit](#bit-type)
+- [Sparsevec](#sparsevec-type)
 
 ### Vector Type
 
-Each vector takes `4 * dimensions + 8` bytes of storage. Each element is a single precision floating-point number (like the `real` type in Postgres), and all elements must be finite (no `NaN`, `Infinity` or `-Infinity`). Vectors can have up to 16,000 dimensions.
+Each vector takes `4 * dimensions + 8` bytes of storage. Each element is a single-precision floating-point number (like the `real` type in Postgres), and all elements must be finite (no `NaN`, `Infinity` or `-Infinity`). Vectors can have up to 16,000 dimensions.
 
 ### Vector Operators
 
@@ -594,6 +851,7 @@ Operator | Description | Added
 \+ | element-wise addition |
 \- | element-wise subtraction |
 \* | element-wise multiplication | 0.5.0
+\|\| | concatenate | unreleased
 <-> | Euclidean distance |
 <#> | negative inner product |
 <=> | cosine distance |
@@ -602,21 +860,102 @@ Operator | Description | Added
 
 Function | Description | Added
 --- | --- | ---
+binary_quantize(vector) → bit | binary quantize | unreleased
 cosine_distance(vector, vector) → double precision | cosine distance |
 inner_product(vector, vector) → double precision | inner product |
-l2_distance(vector, vector) → double precision | Euclidean distance |
 l1_distance(vector, vector) → double precision | taxicab distance | 0.5.0
+l2_distance(vector, vector) → double precision | Euclidean distance |
+l2_normalize(vector) → vector | Normalize with Euclidean norm | unreleased
+subvector(vector, integer, integer) → vector | subvector | unreleased
 vector_dims(vector) → integer | number of dimensions |
 vector_norm(vector) → double precision | Euclidean norm |
 
-### Aggregate Functions
+### Vector Aggregate Functions
 
 Function | Description | Added
 --- | --- | ---
 avg(vector) → vector | average |
 sum(vector) → vector | sum | 0.5.0
 
-## Installation Notes
+### Halfvec Type
+
+Each half vector takes `2 * dimensions + 8` bytes of storage. Each element is a half-precision floating-point number, and all elements must be finite (no `NaN`, `Infinity` or `-Infinity`). Half vectors can have up to 16,000 dimensions.
+
+### Halfvec Operators
+
+Operator | Description | Added
+--- | --- | ---
+\+ | element-wise addition | unreleased
+\- | element-wise subtraction | unreleased
+\* | element-wise multiplication | unreleased
+\|\| | concatenate | unreleased
+<-> | Euclidean distance | unreleased
+<#> | negative inner product | unreleased
+<=> | cosine distance | unreleased
+
+### Halfvec Functions
+
+Function | Description | Added
+--- | --- | ---
+binary_quantize(halfvec) → bit | binary quantize | unreleased
+cosine_distance(halfvec, halfvec) → double precision | cosine distance | unreleased
+inner_product(halfvec, halfvec) → double precision | inner product | unreleased
+l1_distance(halfvec, halfvec) → double precision | taxicab distance | unreleased
+l2_distance(halfvec, halfvec) → double precision | Euclidean distance | unreleased
+l2_norm(halfvec) → double precision | Euclidean norm | unreleased
+l2_normalize(halfvec) → halfvec | Normalize with Euclidean norm | unreleased
+subvector(halfvec, integer, integer) → halfvec | subvector | unreleased
+vector_dims(halfvec) → integer | number of dimensions | unreleased
+
+### Halfvec Aggregate Functions
+
+Function | Description | Added
+--- | --- | ---
+avg(halfvec) → halfvec | average | unreleased
+sum(halfvec) → halfvec | sum | unreleased
+
+### Bit Type
+
+Each bit vector takes `dimensions / 8 + 8` bytes of storage. See the [Postgres docs](https://www.postgresql.org/docs/current/datatype-bit.html) for more info.
+
+### Bit Operators
+
+Operator | Description | Added
+--- | --- | ---
+<~> | Hamming distance | unreleased
+<%> | Jaccard distance | unreleased
+
+### Bit Functions
+
+Function | Description | Added
+--- | --- | ---
+hamming_distance(bit, bit) → double precision | Hamming distance | unreleased
+jaccard_distance(bit, bit) → double precision | Jaccard distance | unreleased
+
+### Sparsevec Type
+
+Each sparse vector takes `8 * non-zero elements + 16` bytes of storage. Each element is a single-precision floating-point number, and all elements must be finite (no `NaN`, `Infinity` or `-Infinity`). Sparse vectors can have up to 16,000 non-zero elements.
+
+### Sparsevec Operators
+
+Operator | Description | Added
+--- | --- | ---
+<-> | Euclidean distance | unreleased
+<#> | negative inner product | unreleased
+<=> | cosine distance | unreleased
+
+### Sparsevec Functions
+
+Function | Description | Added
+--- | --- | ---
+cosine_distance(sparsevec, sparsevec) → double precision | cosine distance | unreleased
+inner_product(sparsevec, sparsevec) → double precision | inner product | unreleased
+l1_distance(sparsevec, sparsevec) → double precision | taxicab distance | unreleased
+l2_distance(sparsevec, sparsevec) → double precision | Euclidean distance | unreleased
+l2_norm(sparsevec) → double precision | Euclidean norm | unreleased
+l2_normalize(sparsevec) → sparsevec | Normalize with Euclidean norm | unreleased
+
+## Installation Notes - Linux and Mac
 
 ### Postgres Location
 
@@ -656,6 +995,26 @@ Note: Replace `16` with your Postgres server version
 
 If compilation fails and the output includes `warning: no such sysroot directory` on Mac, reinstall Xcode Command Line Tools.
 
+### Portability
+
+By default, pgvector compiles with `-march=native` on some platforms for best performance. However, this can lead to `Illegal instruction` errors if trying to run the compiled extension on a different machine.
+
+To compile for portability, use:
+
+```sh
+make OPTFLAGS=""
+```
+
+## Installation Notes - Windows
+
+### Missing Header
+
+If compilation fails with `Cannot open include file: 'postgres.h': No such file or directory`, make sure `PGROOT` is correct.
+
+### Permissions
+
+If installation fails with `Access is denied`, re-run the installation instructions as an administrator.
+
 ## Additional Installation Methods
 
 ### Docker
@@ -671,7 +1030,7 @@ This adds pgvector to the [Postgres image](https://hub.docker.com/_/postgres) (r
 You can also build the image manually:
 
 ```sh
-git clone --branch v0.6.0 https://github.com/pgvector/pgvector.git
+git clone --branch v0.6.2 https://github.com/pgvector/pgvector.git
 cd pgvector
 docker build --build-arg PG_MAJOR=16 -t myuser/pgvector .
 ```
@@ -721,7 +1080,7 @@ Note: Replace `16` with your Postgres server version
 Install the FreeBSD package with:
 
 ```sh
-pkg install postgresql15-pg_vector
+pkg install postgresql15-pgvector
 ```
 
 or the port with:
@@ -840,6 +1199,12 @@ make installcheck REGRESS=functions                            # regression test
 make prove_installcheck PROVE_TESTS=test/t/001_ivfflat_wal.pl  # TAP test
 ```
 
+To enable assertions:
+
+```sh
+make clean && PG_CFLAGS="-DUSE_ASSERT_CHECKING" make && make install
+```
+
 To enable benchmarking:
 
 ```sh
@@ -850,12 +1215,6 @@ To show memory usage:
 
 ```sh
 make clean && PG_CFLAGS="-DHNSW_MEMORY -DIVFFLAT_MEMORY" make && make install
-```
-
-To enable assertions:
-
-```sh
-make clean && PG_CFLAGS="-DUSE_ASSERT_CHECKING" make && make install
 ```
 
 To get k-means metrics:
