@@ -1,8 +1,15 @@
-## 0.7.0 (unreleased)
+## 0.7.1 (unreleased)
+
+- Fixed `undefined symbol` error with GCC 8
+- Fixed compilation error with universal binaries on Mac
+- Fixed compilation warning with Clang < 14
+
+## 0.7.0 (2024-04-29)
 
 - Added `halfvec` type
 - Added `sparsevec` type
 - Added support for indexing `bit` type
+- Added support for indexing L1 distance with HNSW
 - Added `binary_quantize` function
 - Added `hamming_distance` function
 - Added `jaccard_distance` function

@@ -2,7 +2,8 @@
 
 #include <math.h>
 
-#include "bitvector.h"
+#include "bitutils.h"
+#include "bitvec.h"
 #include "catalog/pg_type.h"
 #include "common/shortest_dec.h"
 #include "fmgr.h"
@@ -33,18 +34,10 @@
 #define STATE_DIMS(x) (ARR_DIMS(x)[0] - 1)
 #define CreateStateDatums(dim) palloc(sizeof(Datum) * (dim + 1))
 
-/* target_clones requires glibc */
-#if defined(__gnu_linux__) && defined(__has_attribute)
-/* Use separate line for portability */
-#if __has_attribute(target_clones)
-#define HAVE_TARGET_CLONES
-#endif
-#endif
-
-#if defined(__x86_64__) && defined(HAVE_TARGET_CLONES) && !defined(__FMA__)
-#define VECTOR_DISPATCH __attribute__((target_clones("default", "fma")))
+#if defined(USE_TARGET_CLONES) && !defined(__FMA__)
+#define VECTOR_TARGET_CLONES __attribute__((target_clones("default", "fma")))
 #else
-#define VECTOR_DISPATCH
+#define VECTOR_TARGET_CLONES
 #endif
 
 PG_MODULE_MAGIC;
@@ -56,6 +49,7 @@ PGDLLEXPORT void _PG_init(void);
 void
 _PG_init(void)
 {
+	BitvecInit();
 	HalfvecInit();
 	HnswInit();
 	IvfflatInit();
@@ -571,7 +565,7 @@ halfvec_to_vector(PG_FUNCTION_ARGS)
 	PG_RETURN_POINTER(result);
 }
 
-VECTOR_DISPATCH static float
+VECTOR_TARGET_CLONES static float
 VectorL2SquaredDistance(int dim, float *ax, float *bx)
 {
 	float		distance = 0.0;
@@ -618,7 +612,7 @@ vector_l2_squared_distance(PG_FUNCTION_ARGS)
 	PG_RETURN_FLOAT8((double) VectorL2SquaredDistance(a->dim, a->x, b->x));
 }
 
-VECTOR_DISPATCH static float
+VECTOR_TARGET_CLONES static float
 VectorInnerProduct(int dim, float *ax, float *bx)
 {
 	float		distance = 0.0;
@@ -660,7 +654,7 @@ vector_negative_inner_product(PG_FUNCTION_ARGS)
 	PG_RETURN_FLOAT8((double) -VectorInnerProduct(a->dim, a->x, b->x));
 }
 
-VECTOR_DISPATCH static double
+VECTOR_TARGET_CLONES static double
 VectorCosineSimilarity(int dim, float *ax, float *bx)
 {
 	float		similarity = 0.0;
@@ -735,7 +729,8 @@ vector_spherical_distance(PG_FUNCTION_ARGS)
 	PG_RETURN_FLOAT8(acos(distance) / M_PI);
 }
 
-static float
+/* Does not require FMA, but keep logic simple */
+VECTOR_TARGET_CLONES static float
 VectorL1Distance(int dim, float *ax, float *bx)
 {
 	float		distance = 0.0;
@@ -985,17 +980,32 @@ subvector(PG_FUNCTION_ARGS)
 	Vector	   *a = PG_GETARG_VECTOR_P(0);
 	int32		start = PG_GETARG_INT32(1);
 	int32		count = PG_GETARG_INT32(2);
-	int32		end = start + count;
+	int32		end;
 	float	   *ax = a->x;
 	Vector	   *result;
 	int			dim;
 
+	if (count < 1)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_EXCEPTION),
+				 errmsg("vector must have at least 1 dimension")));
+
+	/*
+	 * Check if (start + count > a->dim), avoiding integer overflow. a->dim
+	 * and count are both positive, so a->dim - count won't overflow.
+	 */
+	if (start > a->dim - count)
+		end = a->dim + 1;
+	else
+		end = start + count;
+
 	/* Indexing starts at 1, like substring */
 	if (start < 1)
 		start = 1;
-
-	if (end > a->dim)
-		end = a->dim + 1;
+	else if (start > a->dim)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_EXCEPTION),
+				 errmsg("vector must have at least 1 dimension")));
 
 	dim = end - start;
 	CheckDim(dim);
@@ -1187,12 +1197,13 @@ vector_accum(PG_FUNCTION_ARGS)
 }
 
 /*
- * Combine vectors or half vectors
+ * Combine vectors or half vectors (also used for halfvec_combine)
  */
 PGDLLEXPORT PG_FUNCTION_INFO_V1(vector_combine);
 Datum
 vector_combine(PG_FUNCTION_ARGS)
 {
+	/* Must also update parameters of halfvec_combine if modifying */
 	ArrayType  *statearray1 = PG_GETARG_ARRAYTYPE_P(0);
 	ArrayType  *statearray2 = PG_GETARG_ARRAYTYPE_P(1);
 	float8	   *statevalues1;
@@ -1308,7 +1319,7 @@ sparsevec_to_vector(PG_FUNCTION_ARGS)
 
 	result = InitVector(dim);
 	for (int i = 0; i < svec->nnz; i++)
-		result->x[svec->indices[i] - 1] = values[i];
+		result->x[svec->indices[i]] = values[i];
 
 	PG_RETURN_POINTER(result);
 }
