@@ -170,7 +170,11 @@ IvfflatGetMetaPageInfo(Relation index, int *lists, int *dimensions)
 	page = BufferGetPage(buf);
 	metap = IvfflatPageGetMeta(page);
 
-	*lists = metap->lists;
+	if (unlikely(metap->magicNumber != IVFFLAT_MAGIC_NUMBER))
+		elog(ERROR, "ivfflat index is not valid");
+
+	if (lists != NULL)
+		*lists = metap->lists;
 
 	if (dimensions != NULL)
 		*dimensions = metap->dimensions;
@@ -338,7 +342,7 @@ IvfflatGetTypeInfo(Relation index)
 		return (const IvfflatTypeInfo *) DatumGetPointer(FunctionCall0Coll(procinfo, InvalidOid));
 }
 
-PGDLLEXPORT PG_FUNCTION_INFO_V1(ivfflat_halfvec_support);
+FUNCTION_PREFIX PG_FUNCTION_INFO_V1(ivfflat_halfvec_support);
 Datum
 ivfflat_halfvec_support(PG_FUNCTION_ARGS)
 {
@@ -353,7 +357,7 @@ ivfflat_halfvec_support(PG_FUNCTION_ARGS)
 	PG_RETURN_POINTER(&typeInfo);
 };
 
-PGDLLEXPORT PG_FUNCTION_INFO_V1(ivfflat_bit_support);
+FUNCTION_PREFIX PG_FUNCTION_INFO_V1(ivfflat_bit_support);
 Datum
 ivfflat_bit_support(PG_FUNCTION_ARGS)
 {

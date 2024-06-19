@@ -300,6 +300,9 @@ HnswGetMetaPageInfo(Relation index, int *m, HnswElement * entryPoint)
 	page = BufferGetPage(buf);
 	metap = HnswPageGetMeta(page);
 
+	if (unlikely(metap->magicNumber != HNSW_MAGIC_NUMBER))
+		elog(ERROR, "hnsw index is not valid");
+
 	if (m != NULL)
 		*m = metap->m;
 
@@ -545,7 +548,7 @@ HnswLoadElementFromTuple(HnswElement element, HnswElementTuple etup, bool loadHe
  * Load an element and optionally get its distance from q
  */
 void
-HnswLoadElement(HnswElement element, float *distance, Datum *q, Relation index, FmgrInfo *procinfo, Oid collation, bool loadVec)
+HnswLoadElement(HnswElement element, float *distance, Datum *q, Relation index, FmgrInfo *procinfo, Oid collation, bool loadVec, float *maxDistance)
 {
 	Buffer		buf;
 	Page		page;
@@ -560,9 +563,6 @@ HnswLoadElement(HnswElement element, float *distance, Datum *q, Relation index, 
 
 	Assert(HnswIsElementTuple(etup));
 
-	/* Load element */
-	HnswLoadElementFromTuple(element, etup, true, loadVec);
-
 	/* Calculate distance */
 	if (distance != NULL)
 	{
@@ -571,6 +571,10 @@ HnswLoadElement(HnswElement element, float *distance, Datum *q, Relation index, 
 		else
 			*distance = (float) DatumGetFloat8(FunctionCall2Coll(procinfo, collation, *q, PointerGetDatum(&etup->data)));
 	}
+
+	/* Load element */
+	if (distance == NULL || maxDistance == NULL || *distance < *maxDistance)
+		HnswLoadElementFromTuple(element, etup, true, loadVec);
 
 	UnlockReleaseBuffer(buf);
 }
@@ -599,7 +603,7 @@ HnswEntryCandidate(char *base, HnswElement entryPoint, Datum q, Relation index, 
 	if (index == NULL)
 		hc->distance = GetCandidateDistance(base, hc, q, procinfo, collation);
 	else
-		HnswLoadElement(entryPoint, &hc->distance, &q, index, procinfo, collation, loadVec);
+		HnswLoadElement(entryPoint, &hc->distance, &q, index, procinfo, collation, loadVec, NULL);
 	return hc;
 }
 
@@ -795,25 +799,27 @@ HnswSearchLayer(char *base, Datum q, List *ep, int ef, int lc, Relation index, F
 			{
 				float		eDistance;
 				HnswElement eElement = HnswPtrAccess(base, e->element);
+				bool		alwaysAdd = wlen < ef;
 
 				f = ((HnswPairingHeapNode *) pairingheap_first(W))->inner;
 
 				if (index == NULL)
 					eDistance = GetCandidateDistance(base, e, q, procinfo, collation);
 				else
-					HnswLoadElement(eElement, &eDistance, &q, index, procinfo, collation, inserting);
+					HnswLoadElement(eElement, &eDistance, &q, index, procinfo, collation, inserting, alwaysAdd ? NULL : &f->distance);
 
-				Assert(!eElement->deleted);
-
-				/* Make robust to issues */
-				if (eElement->level < lc)
-					continue;
-
-				if (eDistance < f->distance || wlen < ef)
+				if (eDistance < f->distance || alwaysAdd)
 				{
-					/* Copy e */
-					HnswCandidate *ec = palloc(sizeof(HnswCandidate));
+					HnswCandidate *ec;
 
+					Assert(!eElement->deleted);
+
+					/* Make robust to issues */
+					if (eElement->level < lc)
+						continue;
+
+					/* Copy e */
+					ec = palloc(sizeof(HnswCandidate));
 					HnswPtrStore(base, ec->element, eElement);
 					ec->distance = eDistance;
 
@@ -1102,7 +1108,7 @@ HnswUpdateConnection(char *base, HnswElement element, HnswCandidate * hc, int lm
 				HnswElement hc3Element = HnswPtrAccess(base, hc3->element);
 
 				if (HnswPtrIsNull(base, hc3Element->value))
-					HnswLoadElement(hc3Element, &hc3->distance, &q, index, procinfo, collation, true);
+					HnswLoadElement(hc3Element, &hc3->distance, &q, index, procinfo, collation, true, NULL);
 				else
 					hc3->distance = GetCandidateDistance(base, hc3, q, procinfo, collation);
 
@@ -1299,7 +1305,7 @@ HnswGetTypeInfo(Relation index)
 		return (const HnswTypeInfo *) DatumGetPointer(FunctionCall0Coll(procinfo, InvalidOid));
 }
 
-PGDLLEXPORT PG_FUNCTION_INFO_V1(hnsw_halfvec_support);
+FUNCTION_PREFIX PG_FUNCTION_INFO_V1(hnsw_halfvec_support);
 Datum
 hnsw_halfvec_support(PG_FUNCTION_ARGS)
 {
@@ -1312,7 +1318,7 @@ hnsw_halfvec_support(PG_FUNCTION_ARGS)
 	PG_RETURN_POINTER(&typeInfo);
 };
 
-PGDLLEXPORT PG_FUNCTION_INFO_V1(hnsw_bit_support);
+FUNCTION_PREFIX PG_FUNCTION_INFO_V1(hnsw_bit_support);
 Datum
 hnsw_bit_support(PG_FUNCTION_ARGS)
 {
@@ -1325,7 +1331,7 @@ hnsw_bit_support(PG_FUNCTION_ARGS)
 	PG_RETURN_POINTER(&typeInfo);
 };
 
-PGDLLEXPORT PG_FUNCTION_INFO_V1(hnsw_sparsevec_support);
+FUNCTION_PREFIX PG_FUNCTION_INFO_V1(hnsw_sparsevec_support);
 Datum
 hnsw_sparsevec_support(PG_FUNCTION_ARGS)
 {

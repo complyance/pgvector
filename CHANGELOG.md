@@ -1,5 +1,14 @@
-## 0.7.1 (unreleased)
+## 0.7.3 (unreleased)
 
+- Fixed compilation warning with MSVC and Postgres 16
+
+## 0.7.2 (2024-06-11)
+
+- Fixed initialization fork for indexes on unlogged tables
+
+## 0.7.1 (2024-06-03)
+
+- Improved performance of on-disk HNSW index builds
 - Fixed `undefined symbol` error with GCC 8
 - Fixed compilation error with universal binaries on Mac
 - Fixed compilation warning with Clang < 14
