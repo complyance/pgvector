@@ -1,5 +1,6 @@
-## 0.7.3 (unreleased)
+## 0.7.3 (2024-07-22)
 
+- Fixed `failed to add index item` error with `sparsevec`
 - Fixed compilation error with FreeBSD ARM
 - Fixed compilation warning with MSVC and Postgres 16
 
