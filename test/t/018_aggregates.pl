@@ -1,11 +1,11 @@
 use strict;
-use warnings;
-use PostgresNode;
-use TestLib;
+use warnings FATAL => 'all';
+use PostgreSQL::Test::Cluster;
+use PostgreSQL::Test::Utils;
 use Test::More;
 
 # Initialize node
-my $node = get_new_node('node');
+my $node = PostgreSQL::Test::Cluster->new('node');
 $node->init;
 $node->start;
 
@@ -53,7 +53,7 @@ sub test_aggregate
 	else
 	{
 		# Does not raise overflow error in this instance due to loss of precision
-		is($res, "[24576,24576,49152]")
+		is($res, "[24576,24576,49152]");
 	}
 }
 
