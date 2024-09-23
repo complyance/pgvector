@@ -76,11 +76,6 @@
 #define SeedRandom(seed) srandom(seed)
 #endif
 
-#if PG_VERSION_NUM < 130000
-#define list_delete_last(list) list_truncate(list, list_length(list) - 1)
-#define list_sort(list, cmp) ((list) = list_qsort(list, cmp))
-#endif
-
 #define HnswIsElementTuple(tup) ((tup)->type == HNSW_ELEMENT_TUPLE_TYPE)
 #define HnswIsNeighborTuple(tup) ((tup)->type == HNSW_NEIGHBOR_TUPLE_TYPE)
 
@@ -160,11 +155,13 @@ struct HnswNeighborArray
 	HnswCandidate items[FLEXIBLE_ARRAY_MEMBER];
 };
 
-typedef struct HnswPairingHeapNode
+typedef struct HnswSearchCandidate
 {
-	pairingheap_node ph_node;
-	HnswCandidate *inner;
-}			HnswPairingHeapNode;
+	pairingheap_node c_node;
+	pairingheap_node w_node;
+	HnswElementPtr element;
+	float		distance;
+}			HnswSearchCandidate;
 
 /* HNSW index options */
 typedef struct HnswOptions
@@ -385,7 +382,7 @@ void	   *HnswAlloc(HnswAllocator * allocator, Size size);
 HnswElement HnswInitElement(char *base, ItemPointer tid, int m, double ml, int maxLevel, HnswAllocator * alloc);
 HnswElement HnswInitElementFromBlock(BlockNumber blkno, OffsetNumber offno);
 void		HnswFindElementNeighbors(char *base, HnswElement element, HnswElement entryPoint, Relation index, FmgrInfo *procinfo, Oid collation, int m, int efConstruction, bool existing);
-HnswCandidate *HnswEntryCandidate(char *base, HnswElement em, Datum q, Relation rel, FmgrInfo *procinfo, Oid collation, bool loadVec);
+HnswSearchCandidate *HnswEntryCandidate(char *base, HnswElement em, Datum q, Relation rel, FmgrInfo *procinfo, Oid collation, bool loadVec);
 void		HnswUpdateMetaPage(Relation index, int updateEntry, HnswElement entryPoint, BlockNumber insertPage, ForkNumber forkNum, bool building);
 void		HnswSetNeighborTuple(char *base, HnswNeighborTuple ntup, HnswElement e, int m);
 void		HnswAddHeapTid(HnswElement element, ItemPointer heaptid);
